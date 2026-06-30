@@ -859,13 +859,26 @@ end
 
 
 
+local load_redis do
+  local REDIS
+
+  load_redis = function(cfg)
+    if not REDIS then
+      REDIS = require("resty.session.redis")
+    end
+
+    return REDIS.new(cfg)
+  end
+end
+
+
+
 local load_storage do
   local DSHM
   local FILE
   local MEMCACHED
   local MYSQL
   local POSTGRES
-  local REDIS
   local REDIS_SENTINEL
   local REDIS_CLUSTER
   local SHM
@@ -923,6 +936,8 @@ local load_storage do
     elseif storage == "redis" then
       local cfg = configuration and configuration.redis
       if cfg then
+        assert(cfg.mode ~= "revocation", "invalid redis mode for session storage")
+
         if cfg.nodes then
           if not REDIS_CLUSTER then
             REDIS_CLUSTER = require("resty.session.redis.cluster")
@@ -937,10 +952,7 @@ local load_storage do
         end
       end
 
-      if not REDIS then
-        REDIS = require("resty.session.redis")
-      end
-      return REDIS.new(cfg)
+      return load_redis(cfg)
 
     elseif storage == "shm" then
       if not SHM then
@@ -1195,6 +1207,7 @@ return {
   decrypt_aes_256_gcm = decrypt_aes_256_gcm,
   hmac_sha256 = hmac_sha256,
   load_storage = load_storage,
+  load_redis = load_redis,
   errmsg = errmsg,
   get_name = get_name,
   set_flag = set_flag,
