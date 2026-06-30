@@ -971,6 +971,90 @@ local load_storage do
 end
 
 
+
+local load_revocation do
+  local CUSTOM = {}
+
+  ---
+  -- Loads session revocation store and creates a new instance using session configuration.
+  --
+  -- @function utils.load_revocation
+  -- @tparam nil|boolean|string revocation revocation store name, `nil` to auto-load from
+  --   `redis` when configured for revocation, `true` for `"redis"`, or `false` to disable
+  -- @tparam[opt] table configuration session configuration
+  -- @treturn table|nil instance of session revocation store
+  -- @treturn string|nil error message
+  --
+  -- @usage
+  -- local redis = require("resty.session.utils").load_revocation("redis", {
+  --   redis = {
+  --     host = "127.0.0.1",
+  --   }
+  -- })
+  load_revocation = function(revocation, configuration)
+    if revocation == false then
+      return nil
+    end
+
+    if not revocation then
+      if not configuration then
+        return nil
+      end
+
+      local redis_cfg = configuration.redis
+      if redis_cfg and redis_cfg.host and redis_cfg.mode ~= "storage" then
+        local session_storage = configuration.storage
+        if not session_storage or session_storage == "cookie" then
+          revocation = "redis"
+        end
+      end
+
+      if not revocation then
+        return nil
+      end
+    end
+
+    if revocation == true then
+      revocation = "redis"
+    end
+
+    if type(revocation) ~= "string" then
+      error("invalid session revocation")
+    end
+
+    if revocation == "cookie" then
+      return nil
+    end
+
+    local session_storage = configuration and configuration.storage
+    if session_storage and session_storage ~= "cookie" then
+      return nil
+    end
+
+    if revocation == "redis" then
+      local cfg = configuration and configuration.redis
+      if not cfg or not cfg.host then
+        return nil
+      end
+
+      if cfg.mode == "storage" then
+        return nil
+      end
+
+      return load_redis(cfg)
+
+    else
+      if not CUSTOM[revocation] then
+        CUSTOM[revocation] = require(revocation)
+      end
+
+      return CUSTOM[revocation].new(configuration and configuration[revocation])
+    end
+  end
+end
+
+
+
 ---
 -- Helper to format error messages.
 --
@@ -1208,6 +1292,7 @@ return {
   hmac_sha256 = hmac_sha256,
   load_storage = load_storage,
   load_redis = load_redis,
+  load_revocation = load_revocation,
   errmsg = errmsg,
   get_name = get_name,
   set_flag = set_flag,

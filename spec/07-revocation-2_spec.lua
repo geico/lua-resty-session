@@ -79,9 +79,19 @@ describe("Revocation tests 2", function()
       session.init(configuration)
     end)
 
+    it("new loads redis revocation from string configuration", function()
+      local s = session.new({
+        revocation = "redis",
+        redis = redis_config,
+      })
+      assert.is_not_nil(s.revocation)
+      assert.is_function(s.revocation.set)
+      assert.is_function(s.revocation.get)
+    end)
+
     it("new validates revocation configuration", function()
       local ok, err = pcall(session.new, {
-        revocation = "redis",
+        revocation = 123,
       })
       assert.is_false(ok)
       assert.matches("invalid session revocation", err)

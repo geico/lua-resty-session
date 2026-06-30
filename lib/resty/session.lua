@@ -44,7 +44,7 @@ local encode_base64url = utils.encode_base64url
 local decode_base64url = utils.decode_base64url
 local table_is_empty = utils.is_empty_table
 local load_storage = utils.load_storage
-local load_redis = utils.load_redis
+local load_revocation = utils.load_revocation
 local encode_json = utils.encode_json
 local decode_json = utils.decode_json
 local base64_size = utils.base64_size
@@ -372,29 +372,6 @@ local function get_store_ttl(self, remember, current_time, creation_time, rollin
   end
 
   return max(ttl, 1)
-end
-
-
-local function load_revocation(configuration)
-  if not configuration then
-    return nil
-  end
-
-  local session_storage = configuration.storage
-  if session_storage and session_storage ~= "cookie" then
-    return nil
-  end
-
-  local redis_cfg = configuration.redis
-  if not redis_cfg or not redis_cfg.host then
-    return nil
-  end
-
-  if redis_cfg.mode == "storage" then
-    return nil
-  end
-
-  return load_redis(redis_cfg)
 end
 
 
@@ -2457,7 +2434,7 @@ local session = {
 -- @field request_headers Set of headers to send to upstream, use `id`, `audience`, `subject`, `timeout`, `idling-timeout`, `rolling-timeout`, `absolute-timeout`. E.g. `{ "id", "timeout" }` will set `Session-Id` and `Session-Timeout` request headers when `set_headers` is called.
 -- @field response_headers Set of headers to send to downstream, use `id`, `audience`, `subject`, `timeout`, `idling-timeout`, `rolling-timeout`, `absolute-timeout`. E.g. `{ "id", "timeout" }` will set `Session-Id` and `Session-Timeout` response headers when `set_headers` is called.
 -- @field storage Storage is responsible of storing session data, use `nil` or `"cookie"` (data is stored in cookie), `"dshm"`, `"file"`, `"memcached"`, `"mysql"`, `"postgres"`, `"redis"`, or `"shm"`, or give a name of custom module (`"custom-storage"`), or a `table` that implements session storage interface (defaults to `nil`)
--- @field revocation Enable Redis-backed session revocation for cookie (stateless) sessions, use `nil`, `true`, `false`, a Redis configuration `table`, or a `table` that implements the revocation store interface (defaults to `nil`)
+-- @field revocation Session revocation backend for cookie (stateless) sessions, use `nil` (auto-load from `redis` when configured), `false` to disable, `"redis"`, `true` (alias for `"redis"`), or a pre-built store `table` with `set`/`get` methods (defaults to `nil`)
 -- @field revocation_fail_mode Behavior when the revocation store is unreachable, use `"open"` (treat as not revoked) or `"closed"` (reject the session) (defaults to `"open"`)
 -- @field dshm Configuration for dshm storage, e.g. `{ prefix = "sessions" }`
 -- @field file Configuration for file storage, e.g. `{ path = "/tmp", suffix = "session" }`
@@ -2520,6 +2497,9 @@ local function opt(configuration, name, default)
         end
       end
 
+    elseif name == "revocation" then
+      value = load_revocation(nil, configuration)
+
     end
 
   else
@@ -2572,24 +2552,25 @@ local function opt(configuration, name, default)
       end
 
     elseif name == "revocation" then
-      if value == true then
-        value = assert(load_revocation(configuration), "unable to load session revocation")
-
-      elseif value == false then
+      if value == false then
         value = nil
 
-      elseif type(value) == "table" then
-        if type(value.set) == "function" and type(value.get) == "function" then
-          -- custom revocation store
-        else
-          value = assert(load_revocation({
-            storage = configuration and configuration.storage,
-            redis = value,
-          }), "unable to load session revocation")
-        end
-
       else
-        error("invalid session revocation")
+        local t = type(value)
+        if t == "string" then
+          value = assert(load_revocation(value, configuration), "unable to load session revocation")
+
+        elseif value == true then
+          value = assert(load_revocation("redis", configuration), "unable to load session revocation")
+
+        elseif t == "table" then
+          if type(value.set) ~= "function" or type(value.get) ~= "function" then
+            error("invalid session revocation")
+          end
+
+        else
+          error("invalid session revocation")
+        end
       end
 
     elseif name == "revocation_fail_mode" then
