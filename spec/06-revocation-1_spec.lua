@@ -129,6 +129,38 @@ describe("Revocation tests 1", function()
       local s = session.new()
       assert.is_nil(s.revocation)
     end)
+
+    it("loads revocation when storage is cookie and redis mode is revocation", function()
+      session.init({
+        cookie_name = cookie_name,
+        storage = "cookie",
+        redis = {
+          host = redis_config.host,
+          password = redis_config.password,
+          mode = "revocation",
+        },
+      })
+
+      local s = session.new()
+      assert.is_not_nil(s.revocation)
+      assert.is_function(s.revocation.set)
+      assert.is_function(s.revocation.get)
+    end)
+
+    it("skips revocation when storage is cookie and redis mode is storage", function()
+      session.init({
+        cookie_name = cookie_name,
+        storage = "cookie",
+        redis = {
+          host = redis_config.host,
+          password = redis_config.password,
+          mode = "storage",
+        },
+      })
+
+      local s = session.new()
+      assert.is_nil(s.revocation)
+    end)
   end)
 
   describe("session: destroy", function()
