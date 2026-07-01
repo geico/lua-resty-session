@@ -983,38 +983,12 @@ local load_revocation do
   --   }
   -- })
   load_revocation = function(revocation, configuration)
-    if revocation == false then
+    if revocation == false or revocation == "cookie" then
       return nil
-    end
-
-    if not revocation then
-      if not configuration then
-        return nil
-      end
-
-      local redis_cfg = configuration.redis
-      if redis_cfg and redis_cfg.host and redis_cfg.mode ~= "storage" then
-        local session_storage = configuration.storage
-        if not session_storage or session_storage == "cookie" then
-          revocation = "redis"
-        end
-      end
-
-      if not revocation then
-        return nil
-      end
     end
 
     if revocation == true then
       revocation = "redis"
-    end
-
-    if type(revocation) ~= "string" then
-      error("invalid session revocation")
-    end
-
-    if revocation == "cookie" then
-      return nil
     end
 
     local session_storage = configuration and configuration.storage
@@ -1022,13 +996,22 @@ local load_revocation do
       return nil
     end
 
-    if revocation == "redis" then
-      local cfg = configuration and configuration.redis
-      if not cfg or not cfg.host then
+    if not revocation then
+      local redis_cfg = configuration and configuration.redis
+      if not redis_cfg or not redis_cfg.host or redis_cfg.mode == "storage" then
         return nil
       end
 
-      if cfg.mode == "storage" then
+      revocation = "redis"
+    end
+
+    if type(revocation) ~= "string" then
+      error("invalid session revocation")
+    end
+
+    if revocation == "redis" then
+      local cfg = configuration and configuration.redis
+      if not cfg or not cfg.host or cfg.mode == "storage" then
         return nil
       end
 
@@ -1041,7 +1024,6 @@ local load_revocation do
       if not CUSTOM[revocation] then
         CUSTOM[revocation] = require(revocation)
       end
-
       return CUSTOM[revocation].new(configuration and configuration[revocation])
     end
   end
