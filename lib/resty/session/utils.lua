@@ -859,26 +859,13 @@ end
 
 
 
-local load_redis do
-  local REDIS
-
-  load_redis = function(cfg)
-    if not REDIS then
-      REDIS = require("resty.session.redis")
-    end
-
-    return REDIS.new(cfg)
-  end
-end
-
-
-
 local load_storage do
   local DSHM
   local FILE
   local MEMCACHED
   local MYSQL
   local POSTGRES
+  local REDIS
   local REDIS_SENTINEL
   local REDIS_CLUSTER
   local SHM
@@ -952,7 +939,10 @@ local load_storage do
         end
       end
 
-      return load_redis(cfg)
+      if not REDIS then
+        REDIS = require("resty.session.redis")
+      end
+      return REDIS.new(cfg)
 
     elseif storage == "shm" then
       if not SHM then
@@ -973,6 +963,7 @@ end
 
 
 local load_revocation do
+  local REDIS
   local CUSTOM = {}
 
   ---
@@ -1041,7 +1032,10 @@ local load_revocation do
         return nil
       end
 
-      return load_redis(cfg)
+      if not REDIS then
+        REDIS = require("resty.session.redis")
+      end
+      return REDIS.new(cfg)
 
     else
       if not CUSTOM[revocation] then
@@ -1291,7 +1285,6 @@ return {
   decrypt_aes_256_gcm = decrypt_aes_256_gcm,
   hmac_sha256 = hmac_sha256,
   load_storage = load_storage,
-  load_redis = load_redis,
   load_revocation = load_revocation,
   errmsg = errmsg,
   get_name = get_name,
