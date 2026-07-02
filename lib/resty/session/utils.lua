@@ -923,6 +923,8 @@ local load_storage do
     elseif storage == "redis" then
       local cfg = configuration and configuration.redis
       if cfg then
+        assert(cfg.mode ~= "revocation", "invalid redis mode for session storage")
+
         if cfg.nodes then
           if not REDIS_CLUSTER then
             REDIS_CLUSTER = require("resty.session.redis.cluster")
@@ -957,6 +959,76 @@ local load_storage do
     end
   end
 end
+
+
+
+local load_revocation do
+  local REDIS
+  local CUSTOM = {}
+
+  ---
+  -- Loads session revocation store and creates a new instance using session configuration.
+  --
+  -- @function utils.load_revocation
+  -- @tparam nil|boolean|string revocation revocation store name, `nil` to auto-load from
+  --   `redis` when configured for revocation, `true` for `"redis"`, or `false` to disable
+  -- @tparam[opt] table configuration session configuration
+  -- @treturn table|nil instance of session revocation store
+  -- @treturn string|nil error message
+  --
+  -- @usage
+  -- local redis = require("resty.session.utils").load_revocation("redis", {
+  --   redis = {
+  --     host = "127.0.0.1",
+  --   }
+  -- })
+  load_revocation = function(revocation, configuration)
+    if revocation == false or revocation == "cookie" then
+      return nil
+    end
+
+    if revocation == true then
+      revocation = "redis"
+    end
+
+    local session_storage = configuration and configuration.storage
+    if session_storage and session_storage ~= "cookie" then
+      return nil
+    end
+
+    if not revocation then
+      local redis_cfg = configuration and configuration.redis
+      if not redis_cfg or not redis_cfg.host or redis_cfg.mode == "storage" then
+        return nil
+      end
+
+      revocation = "redis"
+    end
+
+    if type(revocation) ~= "string" then
+      error("invalid session revocation")
+    end
+
+    if revocation == "redis" then
+      local cfg = configuration and configuration.redis
+      if not cfg or not cfg.host or cfg.mode == "storage" then
+        return nil
+      end
+
+      if not REDIS then
+        REDIS = require("resty.session.redis")
+      end
+      return REDIS.new(cfg)
+
+    else
+      if not CUSTOM[revocation] then
+        CUSTOM[revocation] = require(revocation)
+      end
+      return CUSTOM[revocation].new(configuration and configuration[revocation])
+    end
+  end
+end
+
 
 
 ---
@@ -1195,6 +1267,7 @@ return {
   decrypt_aes_256_gcm = decrypt_aes_256_gcm,
   hmac_sha256 = hmac_sha256,
   load_storage = load_storage,
+  load_revocation = load_revocation,
   errmsg = errmsg,
   get_name = get_name,
   set_flag = set_flag,
