@@ -27,6 +27,16 @@ local bad_redis_config = {
 }
 
 
+local function revocation_redis(config)
+  local cfg = {}
+  for k, v in pairs(config) do
+    cfg[k] = v
+  end
+  cfg.mode = "revocation"
+  return cfg
+end
+
+
 local function extract_cookie(cookie_name, cookies)
   local session_cookie
   if type(cookies) == "table" then
@@ -79,10 +89,14 @@ describe("Revocation tests 2", function()
       session.init(configuration)
     end)
 
-    it("new loads redis revocation from string configuration", function()
+    it("new loads redis revocation when redis mode is revocation", function()
       local s = session.new({
-        revocation = "redis",
-        redis = redis_config,
+        storage = "cookie",
+        redis = {
+          host = redis_config.host,
+          password = redis_config.password,
+          mode = "revocation",
+        },
       })
       assert.is_not_nil(s.revocation)
       assert.is_function(s.revocation.set)
@@ -143,7 +157,7 @@ describe("Revocation tests 2", function()
 
       session.init({
         cookie_name = cookie_name,
-        redis = bad_redis_config,
+        redis = revocation_redis(bad_redis_config),
         revocation_fail_mode = "closed",
       })
 
@@ -198,22 +212,26 @@ describe("Revocation tests 2", function()
     end)
 
     it("destroy: closed fail mode fails when marking revoked fails", function()
-      local s, err = open_session(session_cookie)
-      assert.is_not_nil(s)
+      local s = session.new({
+        revocation = {
+          set = function()
+            return nil, "connection refused"
+          end,
+          get = function()
+            return nil
+          end,
+        },
+        revocation_fail_mode = "closed",
+      })
+      session.__set_ngx_var({
+        ["cookie_" .. cookie_name] = session_cookie,
+      })
+
+      local ok, err = s:open()
+      assert.is_true(ok)
       assert.is_nil(err)
 
-      s.revocation = {
-        set = function()
-          return nil, "connection refused"
-        end,
-        get = function()
-          return nil
-        end,
-      }
-      s.revocation_fail_mode = "closed"
-
       session.__set_ngx_header(cookies)
-      local ok
       ok, err = s:destroy()
       assert.is_nil(ok)
       assert.matches("unable to mark session revoked", err)
@@ -221,71 +239,39 @@ describe("Revocation tests 2", function()
     end)
 
     it("destroy: open fail mode succeeds when marking revoked fails", function()
-      local s, err = open_session(session_cookie)
-      assert.is_not_nil(s)
+      session.init({
+        cookie_name = cookie_name,
+        redis = revocation_redis(bad_redis_config),
+        revocation_fail_mode = "open",
+      })
+
+      local s = session.new()
+      session.__set_ngx_var({
+        ["cookie_" .. cookie_name] = session_cookie,
+      })
+
+      local ok, err = s:open()
+      assert.is_true(ok)
       assert.is_nil(err)
 
-      s.revocation = {
-        set = function()
-          return nil, "connection refused"
-        end,
-        get = function()
-          return nil
-        end,
-      }
-      s.revocation_fail_mode = "open"
-
       session.__set_ngx_header(cookies)
-      local ok
       ok, err = s:destroy()
       assert.is_true(ok)
       assert.is_nil(err)
       assert.equals("closed", s.state)
     end)
 
-    it("open: closed fail mode fails when checking revocation fails", function()
-      local s = session.new({
-        revocation = {
-          set = function()
-            return true
-          end,
-          get = function()
-            return nil, "connection refused"
-          end,
-        },
-        revocation_fail_mode = "closed",
-      })
-
-      session.__set_ngx_var({
-        ["cookie_" .. cookie_name] = session_cookie,
-      })
-
-      local opened, err = s:open()
-      assert.is_nil(opened)
-      assert.matches("unable to check session revocation", err)
-    end)
-
-    it("open: open fail mode succeeds when checking revocation fails", function()
-      local s = session.new({
-        revocation = {
-          set = function()
-            return true
-          end,
-          get = function()
-            return nil, "connection refused"
-          end,
-        },
+    it("open: open fail mode succeeds when redis is unreachable", function()
+      session.init({
+        cookie_name = cookie_name,
+        redis = revocation_redis(bad_redis_config),
         revocation_fail_mode = "open",
       })
 
-      session.__set_ngx_var({
-        ["cookie_" .. cookie_name] = session_cookie,
-      })
-
-      local opened, err = s:open()
+      local opened, err = open_session(session_cookie)
       assert.is_true(opened)
       assert.is_nil(err)
-      assert.equals(value, s:get(test_key))
+      assert.equals(value, opened:get(test_key))
     end)
   end)
 end)

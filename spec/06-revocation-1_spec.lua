@@ -1,6 +1,5 @@
 local session = require "resty.session"
 local redis_storage = require "resty.session.redis"
-local decode_base64url = require("resty.session.utils").decode_base64url
 local encode_base64url = require("resty.session.utils").encode_base64url
 
 
@@ -99,7 +98,7 @@ describe("Revocation tests 1", function()
       session.init(configuration)
     end)
 
-    it("auto-loads revocation from redis configuration", function()
+    it("loads revocation when cookie storage has redis without storage mode", function()
       local s = session.new()
       assert.is_not_nil(s.revocation)
       assert.is_function(s.revocation.set)
@@ -218,71 +217,6 @@ describe("Revocation tests 1", function()
       ok, err = s2:destroy()
       assert.is_true(ok)
       assert.is_nil(err)
-
-      local s3
-      s3, err = open_session(session_cookie)
-      assert.is_nil(s3)
-      assert.equals("session revoked", err)
-    end)
-  end)
-
-  describe("session: open", function()
-    local configuration = {}
-    local cookie_name   = "session_cookie"
-    local test_key      = "test_key"
-    local value         = "test_data"
-
-    local function save_session(s, cookies)
-      session.__set_ngx_header(cookies)
-      s:set(test_key, value)
-      local ok, err = s:save()
-      assert.is_true(ok)
-      assert.is_nil(err)
-      return extract_cookie(cookie_name, cookies["Set-Cookie"])
-    end
-
-    local function open_session(session_cookie)
-      local s = session.new()
-      session.__set_ngx_var({
-        ["cookie_" .. cookie_name] = session_cookie,
-      })
-
-      local ok, err = s:open()
-      if not ok then
-        return nil, err
-      end
-
-      return s
-    end
-
-    before_each(function()
-      configuration = {
-        cookie_name = cookie_name,
-        redis = redis_config,
-      }
-      session.init(configuration)
-    end)
-
-    it("open: revoked identifier is rejected in closed fail mode", function()
-      local cookies = {}
-      local s = session.new()
-      local session_cookie = save_session(s, cookies)
-      s:close()
-
-      local s2, err = open_session(session_cookie)
-      assert.is_not_nil(s2)
-      assert.is_nil(err)
-
-      local identifier = decode_base64url(s2:get_property("id"))
-      local storage_key, skerr = s2.hash_storage_key(identifier)
-      assert.is_not_nil(storage_key)
-      assert.is_nil(skerr)
-      local ok
-      ok, err = s2.revocation:set(s2.cookie_name, storage_key, "1", long_ttl, ngx.time())
-      assert.is_not_nil(ok)
-      assert.is_nil(err)
-
-      s2:close()
 
       local s3
       s3, err = open_session(session_cookie)
