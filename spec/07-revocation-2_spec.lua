@@ -1,30 +1,63 @@
+---
+-- For now these tests don't run on CI.
+-- Ensure to keep the tests consistent with those in 06-revocation-1_spec.lua
+
+
 local session = require "resty.session"
-local redis_storage = require "resty.session.redis"
-local encode_base64url = require("resty.session.utils").encode_base64url
+local utils = require "resty.session.utils"
 
 
 local before_each = before_each
+local after_each = after_each
+local lazy_setup = lazy_setup
 local describe = describe
+local ipairs = ipairs
 local assert = assert
 local pcall = pcall
-local ipairs = ipairs
+local sleep = ngx.sleep
+local time = ngx.time
 local it = it
 
 
-local redis_config = {
-  host = "127.0.0.1",
-  password = "password",
+local storage_configs = {
+  mysql = {
+    username = "root",
+    password = "password",
+    database = "test",
+  },
+  postgres = {
+    username = "postgres",
+    password = "password",
+    database = "test",
+  },
+  redis_sentinel = {
+    prefix = "revocations",
+    password = "password",
+    sentinels = {
+      { host = "127.0.0.1", port = "26379" }
+    },
+  },
+  redis_cluster = {
+    prefix = "revocations",
+    password = "password",
+    nodes = {
+      { ip = "127.0.0.1", port = "6380" }
+    },
+    name = "somecluster",
+    lock_zone = "sessions",
+  },
+  dshm = {
+    prefix = "revocations",
+  },
 }
 
 
-local bad_redis_config = {
-  host = "127.0.0.1",
-  port = 1,
-  password = "password",
-  connect_timeout = 100,
-  send_timeout = 100,
-  read_timeout = 100,
-}
+local function storage_type(ty)
+  if ty == "redis_cluster" or ty == "redis_sentinel" then
+    return "redis"
+  end
+  return ty
+end
 
 
 local function extract_cookie(cookie_name, cookies)
@@ -43,191 +76,354 @@ local function extract_cookie(cookie_name, cookies)
 end
 
 
-describe("Revocation tests 2", function()
-  local long_ttl = 60
-  local id       = "test_id_1iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii"
-  local id1      = "test_id_2iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii"
-  local cookie   = "session_cookie"
+for _, st in ipairs({
+  "mysql",
+  "postgres",
+  "redis_cluster",
+  "redis_sentinel",
+  "dshm",
+}) do
+  describe("Revocation tests 2 #noci", function()
+    local current_time
+    local store
+    local long_ttl  = 60
+    local short_ttl = 2
+    local key       = "test_key_1iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii"
+    local key1      = "test_key_2iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii"
+    local key2      = "test_key_3iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii"
+    local name      = "session_cookie"
+    local mark      = "1"
+    local ty        = storage_type(st)
 
-  describe("session: revocation_fail_mode", function()
-    local configuration = {}
-    local cookie_name   = "session_cookie"
-    local test_key      = "test_key"
-    local value         = "test_data"
-    local session_cookie
-    local cookies
+    lazy_setup(function()
+      local conf = {
+        storage = "cookie",
+        revocation = ty,
+      }
+      conf[ty] = storage_configs[st]
+      store = utils.load_storage(ty, conf)
+      assert.is_not_nil(store)
+    end)
 
-    local function save_session(s, cookies)
-      session.__set_ngx_header(cookies)
-      s:set(test_key, value)
-      local ok, err = s:save()
-      assert.is_true(ok)
-      assert.is_nil(err)
-      return extract_cookie(cookie_name, cookies["Set-Cookie"])
-    end
+    before_each(function()
+      current_time = time()
+    end)
 
-    local function open_session(session_cookie)
-      local s = session.new()
-      session.__set_ngx_var({
-        ["cookie_" .. cookie_name] = session_cookie,
-      })
+    describe("[#" .. st .. "] revocation storage: SET + GET", function()
+      after_each(function()
+        current_time = time()
+        store:delete(name, key, current_time)
+        store:delete(name, key1, current_time)
+        store:delete(name, key2, current_time)
+      end)
 
-      local ok, err = s:open()
-      if not ok then
-        return nil, err
+      it("SET: stores revocation mark and GET observes it", function()
+        local ok, err = store:set(name, key, mark, long_ttl, current_time)
+        assert.is_not_nil(ok)
+        assert.is_nil(err)
+
+        local data
+        data, err = store:get(name, key, current_time)
+        assert.is_nil(err)
+        assert.equals(mark, data)
+      end)
+
+      it("GET: missing revocation key returns not revoked", function()
+        local data, err = store:get(name, key1, current_time)
+        assert.is_nil(data)
+        assert.is_nil(err)
+      end)
+
+      it("SET: ttl expires revocation entry", function()
+        local ok, err = store:set(name, key2, mark, short_ttl, current_time)
+        assert.is_not_nil(ok)
+        assert.is_nil(err)
+
+        local data
+        data, err = store:get(name, key2, current_time)
+        assert.is_nil(err)
+        assert.equals(mark, data)
+
+        sleep(short_ttl + 1)
+
+        data, err = store:get(name, key2, time())
+        assert.is_nil(data)
+        assert.is_nil(err)
+      end)
+
+      it("SET: re-mark refreshes ttl", function()
+        local ok, err = store:set(name, key, mark, short_ttl, current_time)
+        assert.is_not_nil(ok)
+        assert.is_nil(err)
+
+        sleep(1)
+
+        ok, err = store:set(name, key, mark, long_ttl, time())
+        assert.is_not_nil(ok)
+        assert.is_nil(err)
+
+        sleep(short_ttl + 1)
+
+        local data
+        data, err = store:get(name, key, time())
+        assert.is_nil(err)
+        assert.equals(mark, data)
+      end)
+    end)
+
+    describe("[#" .. st .. "] session: revocation lifecycle", function()
+      local cookie_name = "session_cookie"
+      local test_key    = "test_key"
+      local value       = "test_data"
+
+      local function save_session(s, cookies)
+        session.__set_ngx_header(cookies)
+        s:set(test_key, value)
+        local ok, err = s:save()
+        assert.is_true(ok)
+        assert.is_nil(err)
+        return extract_cookie(cookie_name, cookies["Set-Cookie"])
       end
 
-      return s
+      local function open_session(session_cookie)
+        local s = session.new()
+        session.__set_ngx_var({
+          ["cookie_" .. cookie_name] = session_cookie,
+        })
+
+        local ok, err = s:open()
+        if not ok then
+          return nil, err
+        end
+
+        return s
+      end
+
+      before_each(function()
+        local conf = {
+          cookie_name = cookie_name,
+          storage = "cookie",
+          revocation = ty,
+        }
+        conf[ty] = storage_configs[st]
+        session.init(conf)
+      end)
+
+      it("destroy: rejected cookie cannot be reopened", function()
+        local cookies = {}
+        local s = session.new()
+        local session_cookie = save_session(s, cookies)
+        assert.is_not_equal("", session_cookie)
+        s:close()
+
+        local s2, err = open_session(session_cookie)
+        assert.is_not_nil(s2)
+        assert.is_nil(err)
+        assert.equals(value, s2:get(test_key))
+
+        session.__set_ngx_header(cookies)
+        local ok
+        ok, err = s2:destroy()
+        assert.is_true(ok)
+        assert.is_nil(err)
+
+        local s3
+        s3, err = open_session(session_cookie)
+        assert.is_nil(s3)
+        assert.equals("session revoked", err)
+      end)
+    end)
+  end)
+end
+
+
+describe("Revocation tests 2 session: revocation_fail_mode", function()
+  local cookie_name = "session_cookie"
+  local test_key    = "test_key"
+  local value       = "test_data"
+  local session_cookie
+  local cookies
+
+  local function save_session(s, header_cookies)
+    session.__set_ngx_header(header_cookies)
+    s:set(test_key, value)
+    local ok, err = s:save()
+    assert.is_true(ok)
+    assert.is_nil(err)
+    return extract_cookie(cookie_name, header_cookies["Set-Cookie"])
+  end
+
+  local function open_session(cookie_value)
+    local s = session.new()
+    session.__set_ngx_var({
+      ["cookie_" .. cookie_name] = cookie_value,
+    })
+
+    local ok, err = s:open()
+    if not ok then
+      return nil, err
     end
 
-    before_each(function()
-      configuration = {
-        cookie_name = cookie_name,
-        redis = redis_config,
-      }
-      session.init(configuration)
+    return s
+  end
 
-      cookies = {}
-      local s = session.new()
-      session_cookie = save_session(s, cookies)
-      s:close()
-    end)
+  before_each(function()
+    session.init({
+      cookie_name = cookie_name,
+      storage = "cookie",
+    })
 
-    it("open: default fail mode allows open when redis is unreachable", function()
-      session.init({
-        cookie_name = cookie_name,
-        redis = bad_redis_config,
-      })
-
-      local opened, err = open_session(session_cookie)
-      assert.is_true(opened)
-      assert.is_nil(err)
-      assert.equals("open", opened.revocation_fail_mode)
-      assert.equals(value, opened:get(test_key))
-    end)
-
-    it("destroy: open fail mode succeeds when marking revoked fails", function()
-      session.init({
-        cookie_name = cookie_name,
-        redis = bad_redis_config,
-        revocation_fail_mode = "open",
-      })
-
-      local s = session.new()
-      session.__set_ngx_var({
-        ["cookie_" .. cookie_name] = session_cookie,
-      })
-
-      local ok, err = s:open()
-      assert.is_true(ok)
-      assert.is_nil(err)
-
-      session.__set_ngx_header(cookies)
-      ok, err = s:destroy()
-      assert.is_true(ok)
-      assert.is_nil(err)
-      assert.equals("closed", s.state)
-    end)
-
-    it("open: closed fail mode rejects when redis is unreachable", function()
-      session.init({
-        cookie_name = cookie_name,
-        redis = bad_redis_config,
-        revocation_fail_mode = "closed",
-      })
-
-      local opened, err = open_session(session_cookie)
-      assert.is_nil(opened)
-      assert.matches("unable to check session revocation", err)
-    end)
-
-    it("destroy: closed fail mode fails when marking revoked fails", function()
-      local s = session.new({
-        revocation = {
-          set = function()
-            return nil, "connection refused"
-          end,
-          get = function()
-            return nil
-          end,
-        },
-        revocation_fail_mode = "closed",
-      })
-      session.__set_ngx_var({
-        ["cookie_" .. cookie_name] = session_cookie,
-      })
-
-      local ok, err = s:open()
-      assert.is_true(ok)
-      assert.is_nil(err)
-
-      session.__set_ngx_header(cookies)
-      ok, err = s:destroy()
-      assert.is_nil(ok)
-      assert.matches("unable to mark session revoked", err)
-      assert.equals("open", s.state)
-    end)
+    cookies = {}
+    local s = session.new()
+    session_cookie = save_session(s, cookies)
+    s:close()
   end)
 
-  describe("session: Fields validation", function()
-    local configuration = {}
-    local cookie_name   = "session_cookie"
+  it("open: default fail mode allows open when store is unreachable", function()
+    session.init({
+      cookie_name = cookie_name,
+      storage = "cookie",
+      revocation = {
+        set = function()
+          return nil, "connection refused"
+        end,
+        get = function()
+          return nil, "connection refused"
+        end,
+      },
+    })
 
-    before_each(function()
-      configuration = {
-        cookie_name = cookie_name,
-        redis = redis_config,
-      }
-      session.init(configuration)
-    end)
-
-    it("new defaults revocation_fail_mode to open", function()
-      session.init({
-        cookie_name = cookie_name,
-        redis = redis_config,
-      })
-
-      local s = session.new()
-      assert.equals("open", s.revocation_fail_mode)
-    end)
-
-    it("new rejects redis storage with revocation mode", function()
-      local ok, err = pcall(session.new, {
-        storage = "redis",
-        redis = {
-          host = redis_config.host,
-          password = redis_config.password,
-          mode = "revocation",
-        },
-      })
-      assert.is_false(ok)
-      assert.matches("invalid redis mode for session storage", err)
-    end)
-
-    it("new validates revocation configuration", function()
-      local ok, err = pcall(session.new, {
-        revocation = 123,
-      })
-      assert.is_false(ok)
-      assert.matches("invalid session revocation", err)
-    end)
+    local opened, err = open_session(session_cookie)
+    assert.is_not_nil(opened)
+    assert.is_nil(err)
+    assert.equals("open", opened.revocation_fail_mode)
+    assert.equals(value, opened:get(test_key))
   end)
 
-  describe("[#redis] revocation: failures", function()
-    it("SET: connection failure returns error", function()
-      local bad_store = redis_storage.new(bad_redis_config)
+  it("destroy: open fail mode succeeds when marking revoked fails", function()
+    session.init({
+      cookie_name = cookie_name,
+      storage = "cookie",
+      revocation = {
+        set = function()
+          return nil, "connection refused"
+        end,
+        get = function()
+          return nil
+        end,
+      },
+      revocation_fail_mode = "open",
+    })
 
-      local ok, err = bad_store:set(cookie, encode_base64url(id), "1", long_ttl, ngx.time())
-      assert.is_nil(ok)
-      assert.is_not_nil(err)
-    end)
+    local s = session.new()
+    session.__set_ngx_var({
+      ["cookie_" .. cookie_name] = session_cookie,
+    })
 
-    it("GET: connection failure returns error", function()
-      local bad_store = redis_storage.new(bad_redis_config)
+    local ok, err = s:open()
+    assert.is_true(ok)
+    assert.is_nil(err)
 
-      local data, err = bad_store:get(cookie, encode_base64url(id1), ngx.time())
-      assert.is_nil(data)
-      assert.is_not_nil(err)
-    end)
+    session.__set_ngx_header(cookies)
+    ok, err = s:destroy()
+    assert.is_true(ok)
+    assert.is_nil(err)
+    assert.equals("closed", s.state)
+  end)
+
+  it("open: closed fail mode rejects when store is unreachable", function()
+    session.init({
+      cookie_name = cookie_name,
+      storage = "cookie",
+      revocation = {
+        set = function()
+          return nil, "connection refused"
+        end,
+        get = function()
+          return nil, "connection refused"
+        end,
+      },
+      revocation_fail_mode = "closed",
+    })
+
+    local opened, err = open_session(session_cookie)
+    assert.is_nil(opened)
+    assert.matches("unable to check session revocation", err)
+  end)
+
+  it("destroy: closed fail mode fails when marking revoked fails", function()
+    local s = session.new({
+      revocation = {
+        set = function()
+          return nil, "connection refused"
+        end,
+        get = function()
+          return nil
+        end,
+      },
+      revocation_fail_mode = "closed",
+    })
+    session.__set_ngx_var({
+      ["cookie_" .. cookie_name] = session_cookie,
+    })
+
+    local ok, err = s:open()
+    assert.is_true(ok)
+    assert.is_nil(err)
+
+    session.__set_ngx_header(cookies)
+    ok, err = s:destroy()
+    assert.is_nil(ok)
+    assert.matches("unable to mark session revoked", err)
+    assert.equals("open", s.state)
+  end)
+end)
+
+
+describe("Revocation tests 2 session: Fields validation", function()
+  local cookie_name = "session_cookie"
+
+  it("new defaults revocation_fail_mode to open", function()
+    session.init({
+      cookie_name = cookie_name,
+      storage = "cookie",
+    })
+
+    local s = session.new()
+    assert.equals("open", s.revocation_fail_mode)
+  end)
+
+  it("new requires an explicit revocation storage name", function()
+    local ok, err = pcall(session.new, {
+      revocation = true,
+    })
+    assert.is_false(ok)
+    assert.matches("invalid session revocation", err)
+  end)
+
+  it("new validates revocation configuration", function()
+    local ok, err = pcall(session.new, {
+      revocation = 123,
+    })
+    assert.is_false(ok)
+    assert.matches("invalid session revocation", err)
+  end)
+
+  it("new rejects a store table without set and get", function()
+    local ok, err = pcall(session.new, {
+      revocation = {
+        set = function() end,
+      },
+    })
+    assert.is_false(ok)
+    assert.matches("invalid session revocation", err)
+  end)
+
+  it("new rejects an invalid fail mode", function()
+    local ok, err = pcall(session.new, {
+      revocation_fail_mode = "deny",
+    })
+    assert.is_false(ok)
+    assert.matches("invalid revocation fail mode", err)
   end)
 end)

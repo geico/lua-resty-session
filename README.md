@@ -328,7 +328,7 @@ Here are the possible session configuration options:
 | `request_headers`           |    `nil`     | Set of headers to send to upstream, use `id`, `audience`, `subject`, `timeout`, `idling-timeout`, `rolling-timeout`, `absolute-timeout`. E.g. `{ "id", "timeout" }` will set `Session-Id` and `Session-Timeout` request headers when `set_headers` is called.                                        |
 | `response_headers`          |    `nil`     | Set of headers to send to downstream, use `id`, `audience`, `subject`, `timeout`, `idling-timeout`, `rolling-timeout`, `absolute-timeout`. E.g. `{ "id", "timeout" }` will set `Session-Id` and `Session-Timeout` response headers when `set_headers` is called.                                     |
 | `storage`                   |    `nil`     | Storage is responsible of storing session data, use `nil` or `"cookie"` (data is stored in cookie), `"dshm"`, `"file"`, `"memcached"`, `"mysql"`, `"postgres"`, `"redis"`, or `"shm"`, or give a name of custom module (`"custom-storage"`), or a `table` that implements session storage interface. |
-| `revocation`                |    `nil`     | Enable Redis-backed session revocation for cookie (stateless) sessions, use `nil`, `true`, `false`, a Redis configuration `table`, or a `table` that implements the revocation store interface (see below).                                                                                          |
+| `revocation`                |    `nil`     | Storage used for cookie session revocation records. Use `nil` or `false` to disable, a storage name such as `"shm"`, `"redis"`, `"mysql"`, or `"postgres"`, a custom storage module name, or a storage `table` with `set`/`get` methods.                                                                |
 | `revocation_fail_mode`      |   `"open"`   | Behavior when the revocation store is unreachable, use `"open"` (treat as not revoked) or `"closed"` (reject the session).                                                                                                                                                                           |
 | `dshm`                      |    `nil`     | Configuration for dshm storage, e.g. `{ prefix = "sessions" }` (see below)                                                                                                                                                                                                                           |
 | `file`                      |    `nil`     | Configuration for file storage, e.g. `{ path = "/tmp", suffix = "session" }` (see below)                                                                                                                                                                                                             |
@@ -350,22 +350,24 @@ just set the `storage` to `nil` or `"cookie"`.
 
 Cookie (stateless) sessions are self-contained: once issued, a cookie remains
 valid until it expires according to the configured timeouts. Revocation adds
-an optional Redis-backed denylist so that destroyed sessions are rejected
+an optional storage-backed denylist so that destroyed sessions are rejected
 immediately, without waiting for the cookie to expire.
 
 Revocation is only available when session data is stored in the cookie
-(`storage` is `nil` or `"cookie"`). It must be enabled explicitly with
-`revocation = true` (using the `redis` configuration) or
-`revocation = { ... }` (inline Redis or custom store settings). Setting
-`revocation = false` disables it.
+(`storage` is `nil` or `"cookie"`). Select the backend explicitly with
+`revocation = "dshm"`, `"file"`, `"memcached"`, `"mysql"`, `"postgres"`,
+`"redis"`, or `"shm"`. The backend uses its normal configuration section and
+the same storage `set`/`get` contract used for session data. Custom storage
+module names and pre-built storage tables are also supported. Setting
+`revocation = false` or leaving it unset disables revocation.
 
 On every `session:open`, the library checks whether the session identifier is
-revoked. On `session:destroy`, the identifier is written to Redis with a TTL
-equal to the remaining session lifetime (rolling and absolute timeouts). The
-revocation mark is a lightweight sentinel; no session payload is stored in
-Redis.
+revoked. On `session:destroy`, the identifier is written to the selected
+storage with a TTL equal to the remaining session lifetime (rolling and
+absolute timeouts). The revocation mark is a lightweight sentinel; no session
+payload is stored.
 
-Use `revocation_fail_mode` to control behavior when Redis is unreachable:
+Use `revocation_fail_mode` to control behavior when the storage is unavailable:
 
 - `"open"` (default): log a warning and treat the session as not revoked.
   Destroy still clears the cookie even if the revocation write fails.
@@ -377,23 +379,44 @@ the last audience). It does not revoke the previous session identifier on
 audiences). After rotation or partial logout, the previous cookie remains
 usable until its `stale_ttl` or timeout elapses.
 
-Example:
+Examples:
 
 ```lua
+-- Redis denylist
 require("resty.session").init({
   storage = "cookie",
-  revocation = true,
+  revocation = "redis",
   redis = {
     host = "127.0.0.1",
     password = "secret",
     prefix = "sessions",
   },
 })
+
+-- Shared memory denylist
+require("resty.session").init({
+  storage = "cookie",
+  revocation = "shm",
+  shm = {
+    zone = "sessions",
+    prefix = "revocations",
+  },
+})
+
+-- MySQL denylist
+require("resty.session").init({
+  storage = "cookie",
+  revocation = "mysql",
+  mysql = {
+    host = "127.0.0.1",
+    database = "sessions",
+    username = "session",
+    password = "secret",
+  },
+})
 ```
 
-The `redis.mode` setting selects whether a Redis connection is used for
-session data (`"storage"`) or for revocation (`"revocation"`). When unset,
-it defaults to `"revocation"` for cookie storage and `"storage"` otherwise.
+The same pattern works for `"dshm"`, `"file"`, `"memcached"`, and `"postgres"`.
 
 
 ## DSHM Storage Configuration
@@ -582,7 +605,6 @@ connections. Common configuration settings among them all:
 
 | Option              | Default | Description                                                                                  |
 |---------------------|:-------:|----------------------------------------------------------------------------------------------|
-| `mode`              |  `nil`  | Role of this Redis connection: `"storage"` for session data or `"revocation"` for the session denylist. Defaults to `"revocation"` when `storage` is `nil` or `"cookie"`, otherwise `"storage"`. |
 | `prefix`            |  `nil`  | Prefix for the keys stored in Redis.                                                         |
 | `suffix`            |  `nil`  | Suffix for the keys stored in Redis.                                                         |
 | `username`          |  `nil`  | The database username to authenticate.                                                       |
