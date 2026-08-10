@@ -118,12 +118,10 @@ for _, st in ipairs({
       end)
 
       it("SET: stores revocation mark and GET observes it", function()
-        local ok, err = store:set(name, key, mark, long_ttl, current_time)
+        local ok = store:set(name, key, mark, long_ttl, current_time)
         assert.is_not_nil(ok)
-        assert.is_nil(err)
 
-        local data
-        data, err = store:get(name, key, current_time)
+        local data, err = store:get(name, key, current_time)
         assert.is_nil(err)
         assert.equals(mark, data)
       end)
@@ -135,12 +133,10 @@ for _, st in ipairs({
       end)
 
       it("SET: ttl expires revocation entry", function()
-        local ok, err = store:set(name, key2, mark, short_ttl, current_time)
+        local ok = store:set(name, key2, mark, short_ttl, current_time)
         assert.is_not_nil(ok)
-        assert.is_nil(err)
 
-        local data
-        data, err = store:get(name, key2, current_time)
+        local data, err = store:get(name, key2, current_time)
         assert.is_nil(err)
         assert.equals(mark, data)
 
@@ -152,20 +148,17 @@ for _, st in ipairs({
       end)
 
       it("SET: re-mark refreshes ttl", function()
-        local ok, err = store:set(name, key, mark, short_ttl, current_time)
+        local ok = store:set(name, key, mark, short_ttl, current_time)
         assert.is_not_nil(ok)
-        assert.is_nil(err)
 
         sleep(1)
 
-        ok, err = store:set(name, key, mark, long_ttl, time())
+        ok = store:set(name, key, mark, long_ttl, time())
         assert.is_not_nil(ok)
-        assert.is_nil(err)
 
         sleep(short_ttl + 1)
 
-        local data
-        data, err = store:get(name, key, time())
+        local data, err = store:get(name, key, time())
         assert.is_nil(err)
         assert.equals(mark, data)
       end)
