@@ -44,7 +44,6 @@ local encode_base64url = utils.encode_base64url
 local decode_base64url = utils.decode_base64url
 local table_is_empty = utils.is_empty_table
 local load_storage = utils.load_storage
-local load_revocation = utils.load_revocation
 local encode_json = utils.encode_json
 local decode_json = utils.decode_json
 local base64_size = utils.base64_size
@@ -2434,7 +2433,7 @@ local session = {
 -- @field request_headers Set of headers to send to upstream, use `id`, `audience`, `subject`, `timeout`, `idling-timeout`, `rolling-timeout`, `absolute-timeout`. E.g. `{ "id", "timeout" }` will set `Session-Id` and `Session-Timeout` request headers when `set_headers` is called.
 -- @field response_headers Set of headers to send to downstream, use `id`, `audience`, `subject`, `timeout`, `idling-timeout`, `rolling-timeout`, `absolute-timeout`. E.g. `{ "id", "timeout" }` will set `Session-Id` and `Session-Timeout` response headers when `set_headers` is called.
 -- @field storage Storage is responsible of storing session data, use `nil` or `"cookie"` (data is stored in cookie), `"dshm"`, `"file"`, `"memcached"`, `"mysql"`, `"postgres"`, `"redis"`, or `"shm"`, or give a name of custom module (`"custom-storage"`), or a `table` that implements session storage interface (defaults to `nil`)
--- @field revocation Session revocation backend for cookie (stateless) sessions, use `nil` (auto-load from `redis` when configured), `false` to disable, `"redis"`, `true` (alias for `"redis"`), or a pre-built store `table` with `set`/`get` methods (defaults to `nil`)
+-- @field revocation Storage used for cookie session revocation records, use `nil` or `false` to disable, `"dshm"`, `"file"`, `"memcached"`, `"mysql"`, `"postgres"`, `"redis"`, or `"shm"`, a custom storage module name, or a storage `table` with `set`/`get` methods (defaults to `nil`)
 -- @field revocation_fail_mode Behavior when the revocation store is unreachable, use `"open"` (treat as not revoked) or `"closed"` (reject the session) (defaults to `"open"`)
 -- @field dshm Configuration for dshm storage, e.g. `{ prefix = "sessions" }`
 -- @field file Configuration for file storage, e.g. `{ path = "/tmp", suffix = "session" }`
@@ -2497,9 +2496,6 @@ local function opt(configuration, name, default)
         end
       end
 
-    elseif name == "revocation" then
-      value = load_revocation(nil, configuration)
-
     end
 
   else
@@ -2558,10 +2554,7 @@ local function opt(configuration, name, default)
       else
         local t = type(value)
         if t == "string" then
-          value = assert(load_revocation(value, configuration), "unable to load session revocation")
-
-        elseif value == true then
-          value = assert(load_revocation("redis", configuration), "unable to load session revocation")
+          value = assert(load_storage(value, configuration), "unable to load session revocation storage")
 
         elseif t == "table" then
           if type(value.set) ~= "function" or type(value.get) ~= "function" then
@@ -2681,6 +2674,10 @@ function session.new(configuration)
   local storage                   = opt(configuration, "storage",                   DEFAULT_STORAGE)
   local revocation                = opt(configuration, "revocation",                DEFAULT_REVOCATION)
   local revocation_fail_mode      = opt(configuration, "revocation_fail_mode",      DEFAULT_REVOCATION_FAIL_MODE)
+
+  if storage then
+    revocation = nil
+  end
 
   if cookie_prefix == "__Host-" then
     cookie_name          = cookie_prefix .. cookie_name
